@@ -6,25 +6,24 @@
 //  Copyright (c) 2015 Giovanni Collazo. All rights reserved.
 //
 
+import Foundation
 import Cocoa
 
 @NSApplicationMain
 class AppDelegate: NSObject, NSApplicationDelegate {
     @IBOutlet weak var updater: SUUpdater!
     
-    var paths = NSSearchPathForDirectoriesInDomains(
-        NSSearchPathDirectory.DocumentDirectory,
-        NSSearchPathDomainMask.UserDomainMask, true)
-    
-    var documentsDirectory: AnyObject
+    static let userApplicationSupportDirectory =
+        try! FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+
     var dataPath: String
     var logPath: String
     
-    var task: NSTask = NSTask()
-    var pipe: NSPipe = NSPipe()
-    var file: NSFileHandle
+    var task: Process = Process()
+    var pipe: Pipe = Pipe()
+    var file: FileHandle
     
-    var statusBar = NSStatusBar.systemStatusBar()
+    var statusBar = NSStatusBar.system
     var statusBarItem: NSStatusItem = NSStatusItem()
     var menu: NSMenu = NSMenu()
     
@@ -38,24 +37,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var updatesMenuItem: NSMenuItem = NSMenuItem()
     
     override init() {
-        self.file = self.pipe.fileHandleForReading
-        self.documentsDirectory = self.paths[0]
-        self.dataPath = documentsDirectory.stringByAppendingPathComponent("MongoData")
-        self.logPath = documentsDirectory.stringByAppendingPathComponent("MongoData/Logs")
+
+        let appSupport = AppDelegate.userApplicationSupportDirectory
+
+        guard
+            let appName = Bundle.main.infoDictionary?["CFBundleName"] as? String
+        else {
+            fatalError("Unable to determine application name & version from Info.plist")
+        }
         
+        // Add name to Application Support directory, then add the version (which follows mongoDB version).
+        // A versioned directory allows users to use separate versions of the app without worrying about
+        // incompatible data or log file formats.
+
+        let dataDirectory = appSupport
+            .appendingPathComponent(appName)
+
+        self.dataPath = dataDirectory.appendingPathComponent("Data").path
+        self.logPath = dataDirectory.appendingPathComponent("Logs").path
+
+        self.file = self.pipe.fileHandleForReading
+
         super.init()
     }
     
     func startServer() {
-        self.task = NSTask()
-        self.pipe = NSPipe()
+        self.task = Process()
+        self.pipe = Pipe()
         self.file = self.pipe.fileHandleForReading
         
-        if let path = NSBundle.mainBundle().pathForResource("mongod", ofType: "", inDirectory: "Vendor/mongodb") {
+        if let path = Bundle.main.path(forResource: "mongod", ofType: "", inDirectory: "Vendor/mongodb/bin") {
             self.task.launchPath = path
         }
         
-        self.task.arguments = ["--dbpath", self.dataPath, "--nounixsocket", "--logpath", "\(self.logPath)/mongo.log"]
+        self.task.arguments = [
+            "--dbpath", "\(self.dataPath)",
+            "--nounixsocket",
+            "--bind_ip",
+            "127.0.0.1",
+            "--logpath", "\(self.logPath)/mongo.log"
+        ]
         self.task.standardOutput = self.pipe
         
         print("Run mongod")
@@ -67,28 +88,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         print("Terminate mongod")
         task.terminate()
         
-        let data: NSData = self.file.readDataToEndOfFile()
+        let data: Data = self.file.readDataToEndOfFile()
         self.file.closeFile()
         
-        let output: String = NSString(data: data, encoding: NSUTF8StringEncoding)! as String
+        let output: String = NSString(data: data, encoding: String.Encoding.utf8.rawValue)! as String
         print(output)
     }
     
-    func openMongo(sender: AnyObject) {
-        if let path = NSBundle.mainBundle().pathForResource("mongo", ofType: "", inDirectory: "Vendor/mongodb") {
+    @objc func openMongo(_ sender: AnyObject) {
+        if let path = Bundle.main.path(forResource: "mongo", ofType: "", inDirectory: "Vendor/mongodb/bin") {
             var source: String
             
             if appExists("iTerm") {
                 source = "tell application \"iTerm\" \n" +
                             "activate \n" +
-                            "set newTerminal to (make new terminal) \n" +
-                            "tell newTerminal \n" +
-                                "launch session \"Default Session\" \n" +
-                                "tell the last session \n" +
-                                    "write text \"\(path)\" \n" +
-                                "end tell \n" +
+                            "create window with default profile \n" +
+                            "tell current session of current window \n" +
+                                "write text \"\(path)\" \n" +
                             "end tell \n" +
-                         "end tell"
+                        "end tell"
             } else {
                 source = "tell application \"Terminal\" \n" +
                             "activate \n" +
@@ -102,32 +120,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    func openDocumentationPage(send: AnyObject) {
-        if let url: NSURL = NSURL(string: "https://github.com/gcollazo/mongodbapp") {
-            NSWorkspace.sharedWorkspace().openURL(url)
+    @objc func openDocumentationPage(_ send: AnyObject) {
+        if let url: URL = URL(string: "https://github.com/gcollazo/mongodbapp") {
+            NSWorkspace.shared.open(url)
         }
     }
     
-    func openLogsDirectory(send: AnyObject) {
-        NSWorkspace.sharedWorkspace().openFile(self.logPath)
+    @objc func openLogsDirectory(_ send: AnyObject) {
+        NSWorkspace.shared.openFile(self.logPath)
     }
     
     func createDirectories() {
-        if (!NSFileManager.defaultManager().fileExistsAtPath(self.dataPath)) {
+        if (!FileManager.default.fileExists(atPath: self.dataPath)) {
             do {
-                try NSFileManager.defaultManager()
-                    .createDirectoryAtPath(self.dataPath, withIntermediateDirectories: false, attributes: nil)
+                try FileManager.default
+                    .createDirectory(atPath: self.dataPath, withIntermediateDirectories: true, attributes: nil)
             } catch {
-                print("Something went wrong creating dataPath")
+                print("Something went wrong creating dataPath: \(error)")
             }
         }
 
-        if (!NSFileManager.defaultManager().fileExistsAtPath(self.logPath)) {
+        if (!FileManager.default.fileExists(atPath: self.logPath)) {
             do {
-                try NSFileManager.defaultManager()
-                    .createDirectoryAtPath(self.logPath, withIntermediateDirectories: false, attributes: nil)
+                try FileManager.default
+                    .createDirectory(atPath: self.logPath, withIntermediateDirectories: true, attributes: nil)
             } catch {
-                print("Something went wrong creating logPath")
+                print("Something went wrong creating logPath: \(error)")
             }
         }
 
@@ -135,24 +153,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         print("Mongo logs directory: \(self.logPath)")
     }
     
-    func checkForUpdates(sender: AnyObject?) {
+    @objc func checkForUpdates(_ sender: AnyObject?) {
         print("Checking for updates")
         self.updater.checkForUpdates(sender)
     }
     
     func setupSystemMenuItem() {
         // Add statusBarItem
-        statusBarItem = statusBar.statusItemWithLength(-1)
+        statusBarItem = statusBar.statusItem(withLength: -1)
         statusBarItem.menu = menu
         
-        let icon = NSImage(named: "leaf")
-        icon!.template = true
+        let icon = NSImage(named: NSImage.Name(rawValue: "leaf"))
+        icon!.isTemplate = true
         icon!.size = NSSize(width: 18, height: 16)
         statusBarItem.image = icon
         
         // Add version to menu
         versionMenuItem.title = "MongoDB"
-        if let version = NSBundle.mainBundle().objectForInfoDictionaryKey("CFBundleShortVersionString") as! String? {
+        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String? {
             versionMenuItem.title = "MongoDB v\(version)"
         }
         menu.addItem(versionMenuItem)
@@ -162,52 +180,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem)
         
         // Add separator
-        menu.addItem(NSMenuItem.separatorItem())
+        menu.addItem(NSMenuItem.separator())
         
         // Add open mongo to menu
         openMongoMenuItem.title = "Open mongo"
-        openMongoMenuItem.action = Selector("openMongo:")
+        openMongoMenuItem.action = #selector(AppDelegate.openMongo(_:))
         menu.addItem(openMongoMenuItem)
         
         // Add open logs to menu
         openLogsMenuItem.title = "Open logs directory"
-        openLogsMenuItem.action = Selector("openLogsDirectory:")
+        openLogsMenuItem.action = #selector(AppDelegate.openLogsDirectory(_:))
         menu.addItem(openLogsMenuItem)
 
         // Add separator
-        menu.addItem(NSMenuItem.separatorItem())
+        menu.addItem(NSMenuItem.separator())
         
         // Add check for updates to menu
         updatesMenuItem.title = "Check for Updates..."
-        updatesMenuItem.action = Selector("checkForUpdates:")
+        updatesMenuItem.action = #selector(AppDelegate.checkForUpdates(_:))
         menu.addItem(updatesMenuItem)
 
         // Add about to menu
         aboutMenuItem.title = "About"
-        aboutMenuItem.action = Selector("orderFrontStandardAboutPanel:")
+        aboutMenuItem.action = #selector(NSApplication.orderFrontStandardAboutPanel(_:))
         menu.addItem(aboutMenuItem)
         
         // Add docs to menu
         docsMenuItem.title = "Documentation..."
-        docsMenuItem.action = Selector("openDocumentationPage:")
+        docsMenuItem.action = #selector(AppDelegate.openDocumentationPage(_:))
         menu.addItem(docsMenuItem)
         
         // Add separator
-        menu.addItem(NSMenuItem.separatorItem())
+        menu.addItem(NSMenuItem.separator())
         
         // Add quitMenuItem to menu
         quitMenuItem.title = "Quit"
-        quitMenuItem.action = Selector("terminate:")
+        quitMenuItem.action = #selector(NSApplication.shared.terminate)
         menu.addItem(quitMenuItem)
     }
     
-    func appExists(appName: String) -> Bool {
+    func appExists(_ appName: String) -> Bool {
         let found = [
             "/Applications/\(appName).app",
             "/Applications/Utilities/\(appName).app",
             "\(NSHomeDirectory())/Applications/\(appName).app"
         ].map {
-            return NSFileManager.defaultManager().fileExistsAtPath($0)
+            return FileManager.default.fileExists(atPath: $0)
         }.reduce(false) {
             if $0 == false && $1 == false {
                 return false;
@@ -219,13 +237,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return found
     }
 
-    func applicationDidFinishLaunching(aNotification: NSNotification) {
+    func applicationDidFinishLaunching(_ aNotification: Notification) {
         createDirectories()
         setupSystemMenuItem()
         startServer()
     }
     
-    func applicationWillTerminate(notification: NSNotification) {
+    func applicationWillTerminate(_ notification: Notification) {
         stopServer()
     }
     
